@@ -39,10 +39,14 @@ def conv_volume(img, k):
     padded_img = np.pad(img, padding, 'reflect')
 
     H, W = padded_img.shape
-    start_idx_slice = np.arange(H * W).reshape((H, W))[:-k + 1, :-k + 1]
 
-    #use broadcast trick: column vector + row vector = matrix
+
+
+    # start_idx_slice = np.arange(H * W).reshape((H, W))[:-k + 1, :-k + 1]
+    # use broadcast trick: column vector + row vector = matrix
+    start_idx_slice = np.arange(img.shape[0])[:, np.newaxis] * W + np.arange(img.shape[1])
     conv_idx = np.arange(k)[:, np.newaxis] * W + np.arange(k)
+
     conv_idx_3d = conv_idx.ravel()[:, np.newaxis, np.newaxis]
 
     # use broadcast trick: 3d column vector + matrix = volume
