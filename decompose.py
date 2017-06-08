@@ -1,7 +1,7 @@
 import numpy as np
 import scipy
 from scipy import sparse
-
+from scipy.sparse import linalg
 import utils
 def edge_preserving_decompose(img, iter=4, k=3, k_step=8):
     M = img.astype(float)
@@ -29,8 +29,9 @@ def envelope_bound_interpolation(M, extrema_mask):
     pixel_num = flat_M.size
     neighbor_k = 3
     extrema_padded_mask, padding = pad_zeros(extrema_mask, neighbor_k)
-    constraint_idx = np.nonzero(extrema_padded_mask.ravel())[0]
-    constraint_num = constraint_idx.size
+    padded_constraint_idx = np.nonzero(extrema_padded_mask.ravel())[0]
+    constraint_idx = np.nonzero(extrema_mask.ravel())[0]
+    constraint_num = padded_constraint_idx.size # same size with constraint_idx
 
 
     b = np.zeros(pixel_num + constraint_num)
@@ -41,17 +42,17 @@ def envelope_bound_interpolation(M, extrema_mask):
 
     #fill the constriant part
     A_col_idx = np.arange(constraint_num)
-    A_row_idx = constraint_idx
+    A_row_idx = padded_constraint_idx
     A_constraint_fill = np.ones(constraint_num)
-    print(A_col_idx)
-    print(A_row_idx)
-    A_constraint = sparse.bsr_matrix((A_constraint_fill, (A_col_idx, A_row_idx)), shape=(constraint_num, A_optimize.shape[1]))
+
+    #it seems not suitable to use bsr_matrix, since it throws runtime error
+    A_constraint = sparse.csr_matrix((A_constraint_fill, (A_col_idx, A_row_idx)), shape=(constraint_num, A_optimize.shape[1]))
     b[-constraint_num:] = flat_M[constraint_idx]
 
     A = sparse.vstack((A_optimize, A_constraint))
 
-    E = sparse.linalg.lsqr(A, b)[0]
-    return E.reshape(M.shape)[padding:-padding, padding:-padding]
+    E = linalg.lsmr(A, b, maxiter=1000)[0]
+    return E.reshape(extrema_padded_mask.shape)[padding:-padding, padding:-padding]
 
 EPSILON = 1e-9
 def compute_A_optimize(M, neighbor_k=3):
