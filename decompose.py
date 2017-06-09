@@ -4,10 +4,13 @@ from scipy import sparse
 from scipy.sparse import linalg
 import utils
 def edge_preserving_decompose(img, iter=4, k=3, k_step=8):
-    M = img.astype(float)
+    M = img.astype('float32')
     Ds = []
+    utils.show_image(M)
     for i in range(iter):
+        print("decompose iteration %s" % (i + 1))
         min_mask, max_mask = local_extrema(M, k)
+
         envelope_bottom = envelope_bound_interpolation(M, min_mask)
         envelope_top = envelope_bound_interpolation(M, max_mask)
         new_M = (envelope_top + envelope_bottom) / 2
@@ -17,73 +20,73 @@ def edge_preserving_decompose(img, iter=4, k=3, k_step=8):
         M = new_M
         k += k_step
 
-    return clip_and_convert_to_uint8(M), Ds
+    return clip_and_convert_to_uint8(1.2 * M - 10), Ds
 
 def clip_and_convert_to_uint8(img):
-    np.clip(img, 0, 255).astype('uint8')
+    return np.clip(img, 0, 255).astype('uint8')
+
 
 def envelope_bound_interpolation(M, extrema_mask):
-    flat_M = M.ravel()
-    flat_extrema_mask = extrema_mask.ravel()
 
-    pixel_num = flat_M.size
-    neighbor_k = 3
-    extrema_padded_mask, padding = pad_zeros(extrema_mask, neighbor_k)
-    padded_constraint_idx = np.nonzero(extrema_padded_mask.ravel())[0]
-    constraint_idx = np.nonzero(extrema_mask.ravel())[0]
-    constraint_num = padded_constraint_idx.size # same size with constraint_idx
-
-
-    b = np.zeros(pixel_num + constraint_num)
-
-    #fill the optimization part
-    #since the implementation difficulty, w must introduces redundant padded variables
-    A_optimize = compute_A_optimize(M)
-
-    #fill the constriant part
-    A_col_idx = np.arange(constraint_num)
-    A_row_idx = padded_constraint_idx
-    A_constraint_fill = np.ones(constraint_num)
-
-    #it seems not suitable to use bsr_matrix, since it throws runtime error
-    A_constraint = sparse.csr_matrix((A_constraint_fill, (A_col_idx, A_row_idx)), shape=(constraint_num, A_optimize.shape[1]))
-    b[-constraint_num:] = flat_M[constraint_idx]
-
-    A = sparse.vstack((A_optimize, A_constraint))
-
-    E = linalg.lsmr(A, b, maxiter=1000)[0]
-    return E.reshape(extrema_padded_mask.shape)[padding:-padding, padding:-padding]
-
-EPSILON = 1e-9
-def compute_A_optimize(M, neighbor_k=3):
-    pixel_num = M.size
-    center_idx = (neighbor_k * neighbor_k) // 2
+    neighbor_k = 9
     padded_M = pad_img_for_conv(M, neighbor_k)
+    padded_extrema_mask, padding = pad_ones(extrema_mask, neighbor_k)
+    padded_constraint_idx = np.nonzero(padded_extrema_mask.ravel())[0]
+
+    #since the implementation difficulty, A must introduces redundant padded variables
+    A = compute_A(M, padded_M, padded_extrema_mask, neighbor_k)
+
+    b = np.zeros(A.shape[0], dtype='float32')
+    b[padded_constraint_idx] = padded_M.ravel()[padded_constraint_idx]
+
+    E = linalg.lsmr(A, b)[0]
+    return E.reshape(padded_M.shape)[padding:-padding, padding:-padding]
+
+EPSILON = 1e-6
+def compute_A(M, padded_M, padded_extrema_mask, neighbor_k):
+    center_idx = (neighbor_k * neighbor_k) // 2
+    padded_pixel_num = padded_M.size
     conv_idx_vol = conv_idx_volume(padded_M, M.shape, neighbor_k)
 
     neighbor_vol = np.take(padded_M, conv_idx_vol)
     variance = np.var(neighbor_vol, 0)  # note the variance includes the padded pixels
     variance[variance < EPSILON] = EPSILON
 
-    A_col_idx = conv_idx_vol.ravel()
-    A_row_idx = np.tile(np.arange(pixel_num)[:, np.newaxis], [1, conv_idx_vol.shape[0]]).ravel() # conv_idx_vol.shape[0] == k**2
-    fill_A_2d = -(np.exp(-((M - neighbor_vol) ** 2) / variance)) # compute w(r, s), and times -1
-    fill_A_2d[center_idx] = 1 #set the center pixel's coefficient to 1
+    conv_idx_vol = pad_vol_zeros(conv_idx_vol, neighbor_k)
+    conv_idx_vol[center_idx] = np.arange(padded_pixel_num, dtype='int').reshape(conv_idx_vol.shape[1:])
+    A_col_idx = conv_vol_ravel(conv_idx_vol)
 
-    #note, w here contains pixels from padding, so it introduces several variables to be solved,
+    A_row_idx = np.tile(np.arange(padded_pixel_num)[:, np.newaxis], [1, neighbor_k * neighbor_k]).ravel() # conv_idx_vol.shape[0] == k**2
+
+
+    fill_A_vol = np.exp(-((M - neighbor_vol) ** 2) / (2 * variance)) # compute w(r, s), and times -1
+    fill_A_vol /= np.sum(fill_A_vol, axis=0)
+    fill_A_vol *= -1
+    fill_A_vol = pad_vol_zeros(fill_A_vol, neighbor_k)
+    fill_A_vol[:, padded_extrema_mask] = 0 # constraints do not need to be estimated
+    fill_A_vol[center_idx] = 1 #set the center pixel's coefficient to 1
+
+    #note, A contains pixels from padding. However, they're constrained
     #since removeing these variable is hard in the sparse matrix form
-    A = sparse.bsr_matrix((fill_A_2d.ravel(), (A_row_idx, A_col_idx)), shape=(pixel_num, padded_M.size))
+    A = sparse.bsr_matrix((conv_vol_ravel(fill_A_vol), (A_row_idx, A_col_idx)), shape=(padded_pixel_num, padded_pixel_num))
     return A
+
+def conv_vol_ravel(vol):
+    return vol.swapaxes(1, 2).swapaxes(2, 0).ravel()
 
 def local_extrema(img, k):
     vol = conv_volume(img, k)
+    conv_var = np.var(vol, axis=0)
+    # utils.plot_hist(conv_var, [0, np.max(conv_var)])
+    flat_area_mask = conv_var <= 200
     center_idx = (k * k) // 2
 
     lt_cent_statistics = np.sum(vol < vol[center_idx], axis=0)
     gt_cent_statistics = np.sum(vol > vol[center_idx], axis=0)
 
-    EXTREMA_CRITERIA = k - 1
-    return gt_cent_statistics <= EXTREMA_CRITERIA, lt_cent_statistics <= EXTREMA_CRITERIA
+    EXTREMA_CRITERIA = (k * k) // 2 # in original paper is k - 1, it will produce too much unknown
+
+    return np.logical_or(gt_cent_statistics <= EXTREMA_CRITERIA, flat_area_mask), np.logical_or(lt_cent_statistics <= EXTREMA_CRITERIA, flat_area_mask)
 
 def conv_volume(img, k):
     padded_img = pad_img_for_conv(img, k)
@@ -96,9 +99,14 @@ def pad_img_for_conv(img, k):
 
     return padded_img
 
-def pad_zeros(img, k):
+def pad_vol_zeros(vol, k):
     padding = k // 2
-    padded_img = np.pad(img, padding, 'constant', constant_values=0)
+    return np.pad(vol, [[0, 0], [padding, padding], [padding, padding]], 'constant', constant_values=0)
+
+
+def pad_ones(img, k):
+    padding = k // 2
+    padded_img = np.pad(img, padding, 'constant', constant_values=1)
     return padded_img, padding
 
 def conv_idx_volume(padded_img, img_shape, k):
@@ -106,8 +114,8 @@ def conv_idx_volume(padded_img, img_shape, k):
 
     # start_idx_slice = np.arange(H * W).reshape((H, W))[:-k + 1, :-k + 1]
     # use broadcast trick: column vector + row vector = matrix
-    start_idx_slice = np.arange(img_shape[0])[:, np.newaxis] * W + np.arange(img_shape[1])
-    conv_idx = np.arange(k)[:, np.newaxis] * W + np.arange(k)
+    start_idx_slice = np.arange(img_shape[0], dtype='int')[:, np.newaxis] * W + np.arange(img_shape[1], dtype='int')
+    conv_idx = np.arange(k, dtype='int')[:, np.newaxis] * W + np.arange(k, dtype='int')
 
     conv_idx_3d = conv_idx.ravel()[:, np.newaxis, np.newaxis]
 
