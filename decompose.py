@@ -87,9 +87,10 @@ def local_extrema(img, k):
     lt_cent_statistics = np.sum(vol < vol[center_idx], axis=0)
     gt_cent_statistics = np.sum(vol > vol[center_idx], axis=0)
 
-    EXTREMA_CRITERIA = k ** 2 / 2
+    EXTREMA_CRITERIA = k ** 2 / 3
     # EXTREMA_CRITERIA = k-1 # in original paper is k - 1, it will produce too much unknown
 
+    # return gt_cent_statistics <= EXTREMA_CRITERIA, lt_cent_statistics <= EXTREMA_CRITERIA
     return (np.logical_or(gt_cent_statistics <= EXTREMA_CRITERIA, flat_area_mask),
             np.logical_or(lt_cent_statistics <= EXTREMA_CRITERIA, flat_area_mask))
 
