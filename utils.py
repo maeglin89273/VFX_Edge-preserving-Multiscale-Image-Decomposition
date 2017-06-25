@@ -4,7 +4,7 @@ from math import ceil
 
 
 
-def plot_hist(xs, range, bins=20):
+def plot_hist(xs, range, bins=50):
     plt.hist(xs, bins, range=range)
     plt.show()
 
